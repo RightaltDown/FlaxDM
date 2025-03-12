@@ -1,3 +1,8 @@
+from config import setup_jax_environment
+
+# configure before importing jax
+setup_jax_environment()
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -21,7 +26,6 @@ import diffrax as dfx
 from tqdm.auto import tqdm
 import time
 import gc
-
 
 # Model definition - Imported from previous implementation
 class MLP(nn.Module):
@@ -564,6 +568,399 @@ class MNISTDataProvider:
         return jnp.array(np.stack(data))
 
 
+# def main(
+#     patch_size=4,
+#     hidden_size=64,
+#     mix_patch_size=512,
+#     mix_hidden_size=512,
+#     num_blocks=4,
+#     t1=10.0,
+#     num_steps=100_000,
+#     lr=3e-4,
+#     batch_size=512,
+#     print_every=10_000,
+#     checkpoint_every=50_000,
+#     dt0=0.1,
+#     sample_size=10,
+#     checkpoint_dir="./checkpoints",
+#     seed=5678,
+#     memory_fraction=0.8,
+# ):
+#     """Main training function with multi-GPU support."""
+    
+    
+#     os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+#     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(memory_fraction)
+#     # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+    
+#     # os.environ['XLA_FLAGS'] = '--xla_gpu_force_compilation_parallelism=1 --xla_gpu_deterministic_ops=true'
+    
+#     # configure_jax_memory(
+#     #     preallocate=False,
+#     #     memory_fraction=0.4,
+#     #     use_platform_allocator=True
+#     # )
+    
+#     # Check available devices
+#     num_devices = jax.local_device_count()
+#     print(f"Using {num_devices} devices with memory fraction {memory_fraction}")
+#     print_gpu_memory()
+    
+    
+#     # Adjust batch size to be divisible by number of devices
+#     if batch_size % num_devices != 0:
+#         orig_batch_size = batch_size
+#         batch_size = (batch_size // num_devices) * num_devices
+#         print(f"Adjusted batch size from {orig_batch_size} to {batch_size} to be divisible by {num_devices}")
+    
+#     # Set up RNG keys - one per device
+#     master_rng = jr.PRNGKey(seed)
+#     model_rng, train_rng, data_rng, sample_rng = jr.split(master_rng, 4)
+    
+#     # Create per-device RNG keys
+#     train_rngs = jr.split(train_rng, num_devices)
+#     sample_rngs = jr.split(sample_rng, num_devices)
+    
+#     # Load and normalize data
+#     print("Loading MNIST dataset...")
+#     data_provider = MNISTDataProvider(normalize=True, seed=seed)
+#     data_shape = data_provider.get_shape()
+#     data_stats=  data_provider.get_stats()
+    
+#     data_iter = memory_efficient_dataloader(
+#         data_provider,
+#         batch_size,
+#         key=data_rng,
+#         buffer_size=5000
+#     )
+    
+#     # Initialize model
+#     print("Initializing model...")
+    
+    
+#     # Measure memory before model initialization
+#     print("Memory before model initialization")
+#     print_gpu_memory()
+    
+#     # Try to initialize model on CPU to avoid GPU spike
+#     with jax.default_device(jax.devices('cpu')[0]):
+#         try:
+#             model = Mixer2d(
+#                 img_size=data_shape,
+#                 patch_size=patch_size,
+#                 hidden_size=hidden_size,
+#                 mix_patch_size=mix_patch_size,
+#                 mix_hidden_size=mix_hidden_size,
+#                 num_blocks=num_blocks,
+#                 t1=t1
+#             )
+            
+#             # Initialize parameters on CPU
+#             cpu_t_dummy = jnp.zeros(())
+#             cpu_y_dummy = jnp.zeros(data_shape)
+#             cpu_params = model.init(model_rng, cpu_t_dummy, cpu_y_dummy)["params"]
+            
+#             # Create optimizer
+#             tx = optax.adabelief(lr)
+            
+#             # Create initial state on CPU
+#             cpu_state = train_state.TrainState.create(
+#                 apply_fn=model.apply,
+#                 params=cpu_params,
+#                 tx=tx
+#             )
+#             # Now transfer to devices evenly
+#             print("Transferring parameters to devices...")
+#             gpu_state = jax.device_put(cpu_state, device=jax.devices('gpu')[0])
+            
+#             # This will still use default device for compilation but avoid
+#             # parameter replication on a single device
+#             state = jax_utils.replicate(gpu_state)
+            
+#             print("Memory after CPU initialization and transfer:")
+#             print_gpu_memory()
+        
+#         except Exception as e:
+#             print(f"CPU initialization failed: {e}. Falling back to GPU initialization")
+#             # If CPU initialization fails, try distributed initialization
+#             model = Mixer2d(
+#                 img_size=data_shape,
+#                 patch_size=patch_size,
+#                 hidden_size=hidden_size,
+#                 mix_patch_size=mix_patch_size,
+#                 mix_hidden_size=mix_hidden_size,
+#                 num_blocks=num_blocks,
+#                 t1=t1
+#             )
+            
+#             # Use balanced device initialization 
+#             t_dummy = jnp.zeros(())
+#             y_dummy = jnp.zeros(data_shape)
+            
+#             # Create separate RNGs for each device
+#             init_rngs = jr.split(model_rng, num_devices)
+            
+#             # Define a device-local init function
+#             @pmap
+#             def distributed_init(rng):
+#                 return model.init(rng, t_dummy, y_dummy)["params"]
+            
+#             # Initialize in parallel across devices
+#             params_replicated = distributed_init(init_rngs)
+#             params = jax.tree.map(lambda x: x[0], params_replicated)
+            
+#             # Create optimizer
+#             tx = optax.adabelief(lr)
+            
+#             # Create state
+#             state = train_state.TrainState.create(
+#                 apply_fn=model.apply,
+#                 params=params,
+#                 tx=tx
+#             )
+            
+#             # Replicate for training
+#             state = jax_utils.replicate(state)
+            
+    
+    
+#     # After initialization to reduce GPU mem 
+#     jax.clear_caches()
+#     gc.collect()
+    
+#     print("Memory after model initialization:")
+#     print_gpu_memory()
+    
+#     # Create and distribute training state
+#     # print("Creating training state...")
+#     # state = create_train_state(model_rng, model, lr)
+    
+#     # # Create optimizer separately
+#     # tx = optax.adabelief(lr)
+    
+#     # # Create train state with pre-initialized params
+#     # state = train_state.TrainState.create(
+#     #     apply_fn=model.apply,
+#     #     params=params,
+#     #     tx=tx
+#     # )
+    
+#     # Replicate state across devices
+#     # state = jax_utils.replicate(state)
+    
+#     # Create arrays for scalar parameters and replicate across devices
+#     t1_array = jnp.array([t1])
+#     dt0_array = jnp.array([dt0])
+#     t1_replicated = jax_utils.replicate(t1_array)
+#     dt0_replicated = jax_utils.replicate(dt0_array)
+    
+#     # Create checkpoint directory
+#     checkpoint_dir = os.path.abspath(checkpoint_dir)
+#     print(f"Using absolute checkpoint path: {checkpoint_dir}")
+#     os.makedirs(checkpoint_dir, exist_ok=True)
+    
+#     gc.collect()
+    
+#     # Training loop    
+#     print(f"Starting training for {num_steps} steps...")
+#     total_loss = 0.0
+#     step_count = 0
+    
+#     # data_iter = dataloader(data, batch_size, key=data_rng)
+    
+    
+#     # Set up tqdm progress bar
+#     progress_bar = tqdm(range(num_steps), desc="Training", unit="step")
+    
+#     for step in progress_bar:
+#         # Get next batch (already sharded across devices)
+#         batch = next(data_iter)
+        
+#         # Perform distributed training step        
+#         state, loss, train_rngs = train_step(state, batch, t1_replicated, train_rngs)
+        
+#         # Collect loss from all devices and average (move to CPU to avoid device sync issues)
+#         loss = jax_utils.unreplicate(loss).item()
+#         total_loss += loss
+#         step_count += 1
+        
+#         # Update progress bar with current loss
+#         progress_bar.set_postfix({"loss": f"{loss:.6f}", "avg_loss": f"{total_loss/step_count:.6f}"})
+        
+#         # Print detailed progress periodically
+#         if (step+1) % print_every == 0 or step == num_steps - 1:
+#             avg_loss = total_loss / step_count
+#             print(f"\nStep {step+1}/{num_steps} | Avg Loss: {avg_loss}")
+#             print_gpu_memory()
+#             total_loss = 0.0
+#             step_count = 0
+            
+#             jax.clear_caches()
+#             gc.collect()
+        
+#         # Save checkpoint
+#         if (step + 1) % checkpoint_every == 0 or step == num_steps - 1:
+#             unreplicated_state = jax_utils.unreplicate(state)
+#             checkpoints.save_checkpoint(
+#                 ckpt_dir=checkpoint_dir,
+#                 target=unreplicated_state,
+#                 step=step + 1,
+#                 overwrite=True,
+#                 keep=3
+#             )
+#             print(f"Saved checkpoint at step {step+1}")
+        
+    
+#     print("Training complete!")
+    
+#     # Generate samples
+#     print("Generating samples...")
+#     per_device_samples = (sample_size * sample_size) // num_devices
+    
+#     # Collect samples from all devices
+#     sample_batches = []
+    
+#     for i in range(0, sample_size * sample_size, per_device_samples * num_devices):
+#         # Force clear caches before generating samples
+#         jax.clear_caches()
+#         gc.collect()
+        
+#         # Split sample RNGs for each batch
+#         batch_rngs = jr.split(sample_rngs[0], num_devices)
+#         sample_rngs = jr.split(sample_rngs[1], num_devices)
+        
+#         # Generate samples on all devices
+#         device_samples = generate_sample(
+#             state, data_shape,dt0_replicated, t1_replicated, batch_rngs
+#         )
+        
+#         # Move samples to CPU and flatten the device dimension
+#         device_samples = np.array(device_samples)
+#         sample_batches.append(device_samples)
+        
+#         # Update memory monitoring
+#         if i % (2 * per_device_samples * num_devices) == 0:
+#             print_gpu_memory()
+    
+#     # Combine all samples
+#     samples = np.concatenate(sample_batches, axis=0)
+#     samples = samples[:sample_size * sample_size]  # Ensure exact count
+    
+#     # Denormalize samples
+#     samples = data_stats["mean"]+ data_stats["std"] * samples
+#     samples = np.clip(samples, data_stats["min"], data_stats["max"])
+    
+#     # Arrange samples in a grid
+#     sample_grid = einops.rearrange(
+#         samples, "(n1 n2) 1 h w -> (n1 h) (n2 w)", n1=sample_size, n2=sample_size
+#     )
+    
+#     # Plot and save samples
+#     plt.figure(figsize=(10, 10))
+#     plt.imshow(sample_grid, cmap="Greys")
+#     plt.axis("off")
+#     plt.tight_layout()
+#     plt.savefig("diffusion_samples.png", dpi=300)
+#     plt.show()
+#     print("Samples saved to diffusion_samples.png")
+
+# First, let's change the batch_loss_fn to avoid passing functions directly
+
+def batch_loss_fn(model_apply, params, batch, t1, key):
+    """Compute loss for a batch of data with internal noise schedule functions."""
+    # Define noise schedule functions inside to avoid passing them as arguments
+    int_beta = lambda t: t  # Linear schedule
+    weight = lambda t: 1 - jnp.exp(-int_beta(t))  # Upweight region near t=0
+    
+    batch_size = batch.shape[0]
+    tkey, losskey = jr.split(key)
+    losskey = jr.split(losskey, batch_size)
+    
+    # Low-discrepancy sampling over t
+    t = jr.uniform(tkey, (batch_size,), minval=0, maxval=t1 / batch_size)
+    t = t + (t1 / batch_size) * jnp.arange(batch_size)
+    
+    # Vectorize the loss computation with integrated functions
+    def single_loss_fn(data, t, key):
+        """Compute loss for a single timestep with internal functions."""
+        mean = data * jnp.exp(-0.5 * int_beta(t))
+        var = jnp.maximum(1 - jnp.exp(-int_beta(t)), 1e-5)
+        std = jnp.sqrt(var)
+        noise = jr.normal(key, data.shape)
+        y = mean + std * noise
+        
+        # Apply model
+        pred = model_apply({"params": params}, t, y)
+        
+        return weight(t) * jnp.mean((pred + noise / std) ** 2)
+    
+    # Vectorize the loss computation
+    loss_fn = jax.vmap(single_loss_fn)
+    
+    return jnp.mean(loss_fn(batch, t, losskey))
+
+
+# Modify the train_step function to avoid passing scalar values
+@ft.partial(pmap, axis_name='devices')
+def train_step(state, batch, t1_array, rng):
+    """Distributed training step using pmap.
+    
+    Args:
+        state: The replicated TrainState.
+        batch: The data batch, already sharded across devices.
+        t1_array: Array containing t1 value, replicated across devices.
+        rng: Random key, replicated across devices.
+    """
+    # Extract t1 scalar from array
+    t1 = t1_array[0]
+    
+    def loss_fn(params):
+        loss = batch_loss_fn(state.apply_fn, params, batch, t1, rng)
+        return loss
+
+    grad_fn = jax.value_and_grad(loss_fn)
+    loss, grads = grad_fn(state.params)
+    
+    # Average gradients across all devices
+    grads = pmean(grads, axis_name='devices')
+    
+    # Update parameters using optimizer
+    state = state.apply_gradients(grads=grads)
+    
+    # Update random key
+    new_rng = jr.fold_in(rng, 0)
+    
+    return state, loss, new_rng
+
+
+# Similarly, let's modify the generate_sample function
+@ft.partial(pmap, axis_name='devices')
+def generate_sample(state, data_shape, dt0_array, t1_array, rng):
+    """Generate sample on each device."""
+    # Extract scalar values from arrays
+    dt0 = dt0_array[0]
+    t1 = t1_array[0]
+    
+    # Define int_beta inside to avoid passing as argument
+    int_beta = lambda t: t  # Linear schedule
+    
+    def drift(t, y, args):
+        # Calculate derivative of int_beta
+        _, beta = jax.jvp(int_beta, (t,), (jnp.ones_like(t),))
+        model_output = state.apply_fn({"params": state.params}, t, y)
+        return -0.5 * beta * (y + model_output)
+    
+    term = dfx.ODETerm(drift)
+    solver = dfx.Tsit5()
+    t0 = 0
+    y1 = jr.normal(rng, data_shape)
+    
+    # Solve ODE from t1 to t0
+    sol = dfx.diffeqsolve(term, solver, t1, t0, -dt0, y1)
+    return sol.ys[0]
+
+
+# Now let's modify the main function to use these updated functions
 def main(
     patch_size=4,
     hidden_size=64,
@@ -571,36 +968,25 @@ def main(
     mix_hidden_size=512,
     num_blocks=4,
     t1=10.0,
-    num_steps=100_000,
+    num_steps=10_000,
     lr=3e-4,
-    batch_size=128,
-    print_every=10_000,
-    checkpoint_every=50_000,
+    batch_size=256,
+    print_every=1_000,
+    checkpoint_every=5_000,
     dt0=0.1,
     sample_size=10,
     checkpoint_dir="./checkpoints",
     seed=5678,
-    memory_fraction=0.3,
+    use_tqdm=True,  # Added option to toggle tqdm
 ):
     """Main training function with multi-GPU support."""
-    
-    
-    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(memory_fraction)
-    os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
-    os.environ['XLA_FLAGS'] = '--xla_gpu_force_compilation_parallelism=1 --xla_gpu_deterministic_ops=true'
-    
-    # configure_jax_memory(
-    #     preallocate=False,
-    #     memory_fraction=0.4,
-    #     use_platform_allocator=True
-    # )
-    
     # Check available devices
     num_devices = jax.local_device_count()
-    print(f"Using {num_devices} devices with memory fraction {memory_fraction}")
-    print_gpu_memory()
+    percent_gpu = 0.4
     
+#     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(memory_fraction)
+#     os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+    print(f"Training with {num_devices} devices, using {percent_gpu}")
     
     # Adjust batch size to be divisible by number of devices
     if batch_size % num_devices != 0:
@@ -618,137 +1004,33 @@ def main(
     
     # Load and normalize data
     print("Loading MNIST dataset...")
-    data_provider = MNISTDataProvider(normalize=True, seed=seed)
-    data_shape = data_provider.get_shape()
-    data_stats=  data_provider.get_stats()
-    
-    data_iter = memory_efficient_dataloader(
-        data_provider,
-        batch_size,
-        key=data_rng,
-        buffer_size=5000
-    )
-    
-    # data = mnist()
-    # data_mean = jnp.mean(data)
-    # data_std = jnp.std(data)
-    # data_max = jnp.max(data)
-    # data_min = jnp.min(data)
-    # data_shape = data.shape[1:]
-    # data = (data - data_mean) / data_std
+    data = mnist()
+    data_mean = jnp.mean(data)
+    data_std = jnp.std(data)
+    data_max = jnp.max(data)
+    data_min = jnp.min(data)
+    data_shape = data.shape[1:]
+    data = (data - data_mean) / data_std
     
     # Initialize model
     print("Initializing model...")
-    
-    
-    # Measure memory before model initialization
-    print("Memory before model initialization")
-    print_gpu_memory()
-    
-    # Try to initialize model on CPU to avoid GPU spike
-    with jax.default_device(jax.devices('cpu')[0]):
-        try:
-            model = Mixer2d(
-                img_size=data_shape,
-                patch_size=patch_size,
-                hidden_size=hidden_size,
-                mix_patch_size=mix_patch_size,
-                mix_hidden_size=mix_hidden_size,
-                num_blocks=num_blocks,
-                t1=t1
-            )
-            
-            # Initialize parameters on CPU
-            cpu_t_dummy = jnp.zeros(())
-            cpu_y_dummy = jnp.zeros(data_shape)
-            cpu_params = model.init(model_rng, cpu_t_dummy, cpu_y_dummy)["params"]
-            
-            # Create optimizer
-            tx = optax.adabelief(lr)
-            
-            # Create initial state on CPU
-            cpu_state = train_state.TrainState.create(
-                apply_fn=model.apply,
-                params=cpu_params,
-                tx=tx
-            )
-            # Now transfer to devices evenly
-            print("Transferring parameters to devices...")
-            devices = jax.devices()
-            
-            # This will still use default device for compilation but avoid
-            # parameter replication on a single device
-            state = jax_utils.replicate(cpu_state)
-            
-            print("Memory after CPU initialization and transfer:")
-            print_gpu_memory()
-        except Exception as e:
-            print(f"CPU initialization failed: {e}. Falling back to GPU initialization")
-            # If CPU initialization fails, try distributed initialization
-            model = Mixer2d(
-                img_size=data_shape,
-                patch_size=patch_size,
-                hidden_size=hidden_size,
-                mix_patch_size=mix_patch_size,
-                mix_hidden_size=mix_hidden_size,
-                num_blocks=num_blocks,
-                t1=t1
-            )
-            
-            # Use balanced device initialization 
-            t_dummy = jnp.zeros(())
-            y_dummy = jnp.zeros(data_shape)
-            
-            # Create separate RNGs for each device
-            init_rngs = jr.split(model_rng, num_devices)
-            
-            # Define a device-local init function
-            @pmap
-            def distributed_init(rng):
-                return model.init(rng, t_dummy, y_dummy)["params"]
-            
-            # Initialize in parallel across devices
-            params_replicated = distributed_init(init_rngs)
-            params = jax.tree_map(lambda x: x[0], params_replicated)
-            
-            # Create optimizer
-            tx = optax.adabelief(lr)
-            
-            # Create state
-            state = train_state.TrainState.create(
-                apply_fn=model.apply,
-                params=params,
-                tx=tx
-            )
-            
-            # Replicate for training
-            state = jax_utils.replicate(state)
-            
-    
-    
-    # After initialization to reduce GPU mem 
-    jax.clear_caches()
-    gc.collect()
-    
-    print("Memory after model initialization:")
-    print_gpu_memory()
+    model = Mixer2d(
+        img_size=data_shape,
+        patch_size=patch_size,
+        hidden_size=hidden_size,
+        mix_patch_size=mix_patch_size,
+        mix_hidden_size=mix_hidden_size,
+        num_blocks=num_blocks,
+        t1=t1
+    )
     
     # Create and distribute training state
-    # print("Creating training state...")
-    # state = create_train_state(model_rng, model, lr)
-    
-    # # Create optimizer separately
-    # tx = optax.adabelief(lr)
-    
-    # # Create train state with pre-initialized params
-    # state = train_state.TrainState.create(
-    #     apply_fn=model.apply,
-    #     params=params,
-    #     tx=tx
-    # )
+    print("Creating training state...")
+    state = create_train_state(model_rng, model, lr)
     
     # Replicate state across devices
-    # state = jax_utils.replicate(state)
+    print("Replicating across gpus:")
+    state = jax_utils.replicate(state)
     
     # Create arrays for scalar parameters and replicate across devices
     t1_array = jnp.array([t1])
@@ -756,29 +1038,27 @@ def main(
     t1_replicated = jax_utils.replicate(t1_array)
     dt0_replicated = jax_utils.replicate(dt0_array)
     
-    # Create checkpoint directory
+    # Convert checkpoint_dir to absolute path and create directory
     checkpoint_dir = os.path.abspath(checkpoint_dir)
     print(f"Using absolute checkpoint path: {checkpoint_dir}")
     os.makedirs(checkpoint_dir, exist_ok=True)
     
-    gc.collect()
-    
-    # Training loop    
+    # Training loop
     print(f"Starting training for {num_steps} steps...")
     total_loss = 0.0
     step_count = 0
     
-    # data_iter = dataloader(data, batch_size, key=data_rng)
-    
+    data_iter = dataloader(data, batch_size, key=data_rng)
     
     # Set up tqdm progress bar
+    from tqdm.auto import tqdm
     progress_bar = tqdm(range(num_steps), desc="Training", unit="step")
     
     for step in progress_bar:
         # Get next batch (already sharded across devices)
         batch = next(data_iter)
         
-        # Perform distributed training step        
+        # Perform distributed training step with properly shaped arguments
         state, loss, train_rngs = train_step(state, batch, t1_replicated, train_rngs)
         
         # Collect loss from all devices and average (move to CPU to avoid device sync issues)
@@ -790,15 +1070,11 @@ def main(
         progress_bar.set_postfix({"loss": f"{loss:.6f}", "avg_loss": f"{total_loss/step_count:.6f}"})
         
         # Print detailed progress periodically
-        if (step+1) % print_every == 0 or step == num_steps - 1:
+        if (step + 1) % print_every == 0 or step == num_steps - 1:
             avg_loss = total_loss / step_count
-            print(f"\nStep {step+1}/{num_steps} | Avg Loss: {avg_loss}")
-            print_gpu_memory()
+            print(f"\nStep {step+1}/{num_steps} | Avg Loss: {avg_loss:.6f}")
             total_loss = 0.0
             step_count = 0
-            
-            jax.clear_caches()
-            gc.collect()
         
         # Save checkpoint
         if (step + 1) % checkpoint_every == 0 or step == num_steps - 1:
@@ -811,7 +1087,6 @@ def main(
                 keep=3
             )
             print(f"Saved checkpoint at step {step+1}")
-        
     
     print("Training complete!")
     
@@ -822,35 +1097,32 @@ def main(
     # Collect samples from all devices
     sample_batches = []
     
-    for i in range(0, sample_size * sample_size, per_device_samples * num_devices):
-        # Force clear caches before generating samples
-        jax.clear_caches()
-        gc.collect()
-        
+    # Set up tqdm for sample generation
+    from tqdm.auto import tqdm
+    total_batches = (sample_size * sample_size + per_device_samples * num_devices - 1) // (per_device_samples * num_devices)
+    sample_progress = tqdm(range(total_batches), desc="Generating samples", unit="batch")
+    
+    for i in sample_progress:
         # Split sample RNGs for each batch
         batch_rngs = jr.split(sample_rngs[0], num_devices)
         sample_rngs = jr.split(sample_rngs[1], num_devices)
         
-        # Generate samples on all devices
+        # Generate samples on all devices with properly shaped arguments
         device_samples = generate_sample(
-            state, data_shape,dt0_replicated, t1_replicated, batch_rngs
+            state, data_shape, dt0_replicated, t1_replicated, batch_rngs
         )
         
         # Move samples to CPU and flatten the device dimension
         device_samples = np.array(device_samples)
         sample_batches.append(device_samples)
-        
-        # Update memory monitoring
-        if i % (2 * per_device_samples * num_devices) == 0:
-            print_gpu_memory()
     
     # Combine all samples
     samples = np.concatenate(sample_batches, axis=0)
     samples = samples[:sample_size * sample_size]  # Ensure exact count
     
     # Denormalize samples
-    samples = data_stats["mean"]+ data_stats["std"] * samples
-    samples = np.clip(samples, data_stats["min"], data_stats["max"])
+    samples = data_mean + data_std * samples
+    samples = np.clip(samples, data_min, data_max)
     
     # Arrange samples in a grid
     sample_grid = einops.rearrange(
